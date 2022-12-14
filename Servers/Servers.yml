@@ -1,0 +1,190 @@
+############################## Server File 2/2 ##############################
+AWSTemplateFormatVersion: 2010-09-09
+Description:
+  Emad elsherbiny >
+  servers Udacity project 2(  Deploy a high-availability web app using CloudFormation).
+  12/12/2022
+
+############################## Parameters ##############################
+Parameters:
+ EnvironmentName:
+    Description: An Environment name that will be prefixed to resources
+    Type: String
+
+ InstanceType:
+    Description: EC2 instance type 2 vCPUs and 4GB of RAM
+    Type: String
+    Default: t3.medium
+
+ InstanceImageId:
+    Description: serve image id
+    Type: String
+    # Ubuntu Server 18.04 LTS
+    Default: ami-061dbd1209944525c
+ 
+
+ ############################## Resources ##############################
+Resources:
+    
+ # IAM Roles 
+  S3BucketRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: "/"
+
+  # Instance Profile for EC2 #
+
+  S3InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles: 
+        - !Ref S3BucketRole
+
+ 
+  LBSecGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: Allow HTTP traffic to the Load Balancer
+        VpcId:
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-VPCID"
+        SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allows HTTP traffic to the web servers and SSH access only from local VPC      
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0      
+      - IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+        CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+      VpcId:
+        Fn::ImportValue:
+          !Sub "${EnvironmentName}-VPCID"
+
+ # EC2  
+  WebAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install apache2 -y
+          systemctl start apache2.service
+          cd /var/www/html
+          echo "Udacity Demo Web Server Up and Running!" > index.html
+      ImageId: !Ref InstanceImageId 
+      IamInstanceProfile: !Ref S3InstanceProfile 
+      SecurityGroups:
+      - Ref: WebServerSecGroup
+      InstanceType: !Ref InstanceType
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: '10'
+
+
+  WebAppGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier:
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-PRIV-NETS'
+      LaunchConfigurationName: !Ref WebAppLaunchConfig
+      MinSize: '2'
+      MaxSize: '4'
+      TargetGroupARNs:
+        - !Ref WebAppTargetGroup
+
+  WebAppLB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Subnets:
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-PUB1-SN'
+        - !ImportValue 
+          'Fn::Sub': '${EnvironmentName}-PUB2-SN'
+      SecurityGroups:
+        - !Ref LBSecGroup
+
+  Listener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      LoadBalancerArn: !Ref WebAppLB
+      Port: '80'
+      Protocol: HTTP
+
+  ALBListenerRule:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /
+      ListenerArn: !Ref Listener
+      Priority: 1
+
+  WebAppTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      TargetGroupAttributes:
+        - Key: slow_start.duration_seconds
+          Value: 300
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !ImportValue 
+        'Fn::Sub': '${EnvironmentName}-VPCID'
+ 
+
+# -------------Output ------------
+
+Outputs:
+  DNS:
+    Description: The website URL
+    Value: !Sub
+      - "http://${DNSName}"
+      - { DNSName: !GetAtt "WebAppLB.DNSName" }
+    Export:
+      Name: !Sub "${EnvironmentName}-SiteURL"

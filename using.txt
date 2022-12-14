@@ -1,0 +1,9 @@
+
+
+./create.sh NetworkStack Network/Network.yml Network/Network-params.json
+
+./create.sh ServersStack Servers/Servers.yml Servers/Servers-params.json
+
+
+./delete.sh ServersStack 
+./delete.sh NetworkStack 
